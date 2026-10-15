@@ -129,6 +129,8 @@ C'est le bon moment pour vérifier que les glissements fonctionnent.
 Double-clique sur **`4_LANCER_BOT.bat`**. Le bot joue en boucle, niveau après niveau.
 
 - **Pour l'arrêter** : clique dans la fenêtre noire et appuie sur **Ctrl + C**.
+  C'est la seule façon de l'arrêter : en cas d'erreur (câble qui saute, téléphone qui
+  ne répond plus…), il attend que le téléphone revienne et reprend tout seul.
 - Pendant qu'il tourne, **ne touche pas l'écran** du téléphone et laisse le jeu ouvert.
 - Il vaut mieux le lancer sur un niveau **pas encore commencé** (il sait reprendre un
   niveau entamé, mais c'est plus fiable au début d'un niveau).
@@ -219,7 +221,7 @@ automatisation-words-of-wonders/
 ```
 
 Fichiers créés pendant l'utilisation (non partagés sur GitHub) : `platform-tools/`
-(ADB), `mots_appris.json` (mots validés), `captures/`, `debug/`.
+(ADB), `mots_appris.json` (mots validés), `erreurs.log`, `captures/`, `debug/`.
 
 ## 11. Crédits et licence
 

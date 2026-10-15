@@ -81,6 +81,15 @@ Après 4 essais sans effet, il appuie sur RETOUR.
 Si le bouton à toucher est ailleurs, change `POS_TAP_INCONNU` en haut de
 `automatisation_wow.py` : `(0.5, 0.85)` veut dire « au milieu, à 85 % de la hauteur ».
 
+## Le bot affiche « ! erreur n°… »
+
+Ce n'est pas grave : le bot ne s'arrête plus jamais tout seul. Si le téléphone ne
+répond plus (câble qui saute, téléphone qui chauffe, mise en veille…), il attend que
+le téléphone revienne, puis reprend la partie. Seul **Ctrl + C** l'arrête.
+
+Le détail de chaque erreur est noté dans le fichier `erreurs.log` : joins-le si tu
+ouvres une *issue* sur GitHub.
+
 ## Plusieurs téléphones branchés
 
 Indique lequel utiliser avant de lancer (le numéro est affiché par `adb devices`) :

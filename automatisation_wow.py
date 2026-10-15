@@ -22,7 +22,7 @@ Utilisation :
   python automatisation_wow.py --test img    analyse une capture, sans téléphone
   python automatisation_wow.py --debug       joue + enregistre des images annotées
 """
-import argparse, itertools, json, os, random, shutil, subprocess, sys, time
+import argparse, itertools, json, os, queue, random, shutil, subprocess, sys, threading, time, traceback
 from collections import Counter
 
 import cv2
@@ -87,7 +87,10 @@ CAPTURES_DIR = os.path.join(HERE, "captures")
 # =============================================================================
 def adb(*args, binary=False):
     cmd = [ADB] + (["-s", DEVICE] if DEVICE else []) + list(args)
-    r = subprocess.run(cmd, capture_output=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"adb ne répond plus : {' '.join(cmd)}")
     if r.returncode != 0:
         raise RuntimeError(f"adb a échoué : {' '.join(cmd)}\n{r.stderr.decode(errors='ignore')}")
     return r.stdout if binary else r.stdout.decode(errors="ignore")
@@ -101,21 +104,44 @@ class Shell:
         self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, bufsize=0)
         self.n = 0
+        self.mort = False
+        # lecture dans un fil séparé : permet d'abandonner si le téléphone ne répond plus
+        self.lignes = queue.Queue()
+        threading.Thread(target=self._lire, daemon=True).start()
 
-    def run(self, commande):
+    def _lire(self):
+        for ligne in iter(self.p.stdout.readline, b""):
+            self.lignes.put(ligne)
+        self.lignes.put(None)                   # session fermée
+
+    def run(self, commande, timeout=30):
         self.n += 1
         fin = f"__FIN{self.n}__"
         self.p.stdin.write(f"{commande}; echo {fin}\n".encode())
         self.p.stdin.flush()
         out = []
+        limite = time.time() + timeout
         while True:
-            ligne = self.p.stdout.readline()
-            if not ligne:
+            try:
+                ligne = self.lignes.get(timeout=max(0.1, limite - time.time()))
+            except queue.Empty:
+                self.fermer()
+                raise RuntimeError("Le téléphone ne répond plus (commande trop longue)")
+            if ligne is None:
+                self.mort = True
                 raise RuntimeError("La session adb s'est fermée (câble débranché ?)")
             ligne = ligne.decode(errors="ignore").rstrip("\r\n")
             if ligne == fin:
                 return "\n".join(out)
             out.append(ligne)
+
+    def fermer(self):
+        self.mort = True
+        try:
+            self.p.kill()
+            self.p.wait(timeout=5)
+        except Exception:
+            pass
 
 
 _SHELL = None
@@ -123,7 +149,7 @@ _SHELL = None
 
 def sh(commande):
     global _SHELL
-    if _SHELL is None or _SHELL.p.poll() is not None:
+    if _SHELL is None or _SHELL.mort or _SHELL.p.poll() is not None:
         _SHELL = Shell()
     return _SHELL.run(commande)
 
@@ -905,12 +931,48 @@ class Chrono:
         return " · ".join(f"{n} {d:.2f}s" for n, d in self.etapes) + f"  (total {self.total():.2f}s)"
 
 
+NIVEAUX_FAITS = 0
+
+
+def jouer_sans_fin(debug=False, niveaux_max=None):
+    """Lance la boucle de jeu et la relance automatiquement après n'importe quelle
+    erreur (téléphone qui ne répond plus, câble qui saute, écran bizarre...).
+    Seul Ctrl+C arrête vraiment le bot."""
+    global _SHELL
+    erreurs = 0
+    while True:
+        try:
+            boucle(debug, niveaux_max)
+            return                                   # --niveaux atteint
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            erreurs += 1
+            print(f"\n  ! erreur n°{erreurs} : {e}")
+            try:
+                with open(os.path.join(HERE, "erreurs.log"), "a", encoding="utf-8") as f:
+                    f.write(time.strftime("\n=== %Y-%m-%d %H:%M:%S ===\n") + traceback.format_exc())
+            except Exception:
+                pass
+            if _SHELL is not None:
+                _SHELL.fermer()
+                _SHELL = None
+            print("  -> on attend le téléphone puis on reprend (Ctrl+C pour arrêter)")
+            try:
+                subprocess.run([ADB] + (["-s", DEVICE] if DEVICE else []) + ["wait-for-device"],
+                               timeout=120, capture_output=True)
+            except Exception:
+                pass
+            time.sleep(5)
+
+
 def boucle(debug=False, niveaux_max=None):
     if debug:
         os.makedirs(DEBUG_DIR, exist_ok=True)
     print("Appareils :", adb("devices").strip().splitlines()[1:])
     init_tactile()
-    faits, inconnu_depuis, taps_inconnu = 0, None, 0
+    global NIVEAUX_FAITS
+    faits, inconnu_depuis, taps_inconnu = NIVEAUX_FAITS, None, 0
     while niveaux_max is None or faits < niveaux_max:
         img = capture()
         bouton = bouton_vert(img)
@@ -929,6 +991,7 @@ def boucle(debug=False, niveaux_max=None):
                 ch.etape("sauvegarde capture")
             if jouer_niveau(img, debug, ch):
                 faits += 1
+                NIVEAUX_FAITS = faits
                 time.sleep(DELAI_FIN_NIVEAU)
             else:
                 time.sleep(2)
@@ -1004,6 +1067,6 @@ if __name__ == "__main__":
             for f in a.test:
                 tester(f)
         else:
-            boucle(a.debug, a.niveaux)
+            jouer_sans_fin(a.debug, a.niveaux)
     except KeyboardInterrupt:
         print("\nArrêt.")
