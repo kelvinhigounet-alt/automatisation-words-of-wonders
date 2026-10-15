@@ -135,6 +135,24 @@ Double-clique sur **`4_LANCER_BOT.bat`**. Le bot joue en boucle, niveau après n
 - Il vaut mieux le lancer sur un niveau **pas encore commencé** (il sait reprendre un
   niveau entamé, mais c'est plus fiable au début d'un niveau).
 
+**Compte rendu de session :** quand tu arrêtes le bot avec Ctrl + C, il affiche un
+résumé et l'enregistre dans le dossier `rapports/` (un fichier par session, par ex.
+`session_2026-10-15_20h52.txt`) : durée, niveaux terminés, rythme par heure, mots
+trouvés, taux de réussite, mot le plus long, temps moyens, récompenses, erreurs, et le
+détail de chaque niveau. Le fichier est mis à jour après chaque niveau : il reste
+utilisable même si la fenêtre est fermée sans Ctrl + C.
+
+```
+NIVEAUX
+  Terminés                 : 42
+  Durée moyenne / niveau   : 0 min 38 s
+  Rythme                   : 87.5 niveaux par heure
+MOTS
+  Mots trouvés             : 318
+  Essais au total          : 402  (réussite 79 %)
+  Mot le plus long         : COIFFE (6 lettres)
+```
+
 **Lire ce qui s'affiche :**
 
 | Ligne | Signification |
@@ -221,7 +239,8 @@ automatisation-words-of-wonders/
 ```
 
 Fichiers créés pendant l'utilisation (non partagés sur GitHub) : `platform-tools/`
-(ADB), `mots_appris.json` (mots validés), `erreurs.log`, `captures/`, `debug/`.
+(ADB), `mots_appris.json` (mots validés), `erreurs.log`, `rapports/` (comptes rendus
+de session), `captures/`, `debug/`.
 
 ## 11. Crédits et licence
 

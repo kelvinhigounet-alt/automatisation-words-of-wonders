@@ -50,6 +50,8 @@ CAPTURE_TOUS_LES_N_NIVEAUX = 3  # garde une capture tous les N niveaux (0 = jama
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
+if not os.path.isdir(DATA):        # ancienne organisation : fichiers à côté du script
+    DATA = HERE
 
 
 def _trouver(env, local, nom, defauts=()):
@@ -731,6 +733,130 @@ def analyser(img):
     return grille, roue, lettres
 
 
+
+# =============================================================================
+#  COMPTE RENDU DE SESSION
+# =============================================================================
+
+RAPPORTS_DIR = os.path.join(HERE, "rapports")
+
+
+def _duree(sec):
+    sec = int(sec)
+    h, m, s = sec // 3600, sec % 3600 // 60, sec % 60
+    return f"{h} h {m:02d} min {s:02d} s" if h else f"{m} min {s:02d} s"
+
+
+class Session:
+    """Statistiques de la session en cours. Le compte rendu est réécrit après chaque
+    niveau (il reste à jour même si la fenêtre est fermée brutalement) et une
+    dernière fois à l'arrêt avec Ctrl+C."""
+
+    def __init__(self):
+        self.debut = time.time()
+        self.fichier = os.path.join(RAPPORTS_DIR, time.strftime("session_%Y-%m-%d_%Hh%M.txt"))
+        self.niveaux = []                 # un dict par niveau terminé
+        self.abandons = 0
+        self.essais = 0
+        self.mots = 0
+        self.sources = Counter()
+        self.plus_long = ""
+        self.t_glisser = self.t_capture = 0.0
+        self.rescans = self.recompenses = self.retours = self.erreurs = 0
+        self.mode_tactile = "?"
+        self._niveau = None
+
+    # --- appelé par le bot
+    def debut_niveau(self, lettres, nb_cases):
+        self._niveau = {"lettres": "".join(lettres), "cases": nb_cases, "debut": time.time(),
+                        "mots": 0, "essais": 0}
+
+    def essai(self, glisser, capture):
+        self.essais += 1
+        self.t_glisser += glisser
+        self.t_capture += capture
+        if self._niveau:
+            self._niveau["essais"] += 1
+
+    def mot_trouve(self, mot, source):
+        self.mots += 1
+        self.sources[source] += 1
+        if len(mot) > len(self.plus_long):
+            self.plus_long = mot
+        if self._niveau:
+            self._niveau["mots"] += 1
+
+    def fin_niveau(self, reussi):
+        if self._niveau:
+            n = self._niveau
+            n["duree"] = time.time() - n["debut"]
+            if reussi:
+                self.niveaux.append(n)
+            else:
+                self.abandons += 1
+            self._niveau = None
+        self.ecrire()
+
+    # --- compte rendu
+    def texte(self):
+        duree = time.time() - self.debut
+        nb = len(self.niveaux)
+        L = []
+        L.append("COMPTE RENDU DE SESSION — Automatisation Words of Wonders")
+        L.append("=" * 58)
+        L.append(f"Début            : {time.strftime('%d/%m/%Y %H:%M:%S', time.localtime(self.debut))}")
+        L.append(f"Fin              : {time.strftime('%d/%m/%Y %H:%M:%S')}")
+        L.append(f"Durée            : {_duree(duree)}")
+        L.append(f"Mode de toucher  : {self.mode_tactile}")
+        L.append("")
+        L.append("NIVEAUX")
+        L.append(f"  Terminés                 : {nb}")
+        L.append(f"  Abandonnés / relancés    : {self.abandons}")
+        if nb:
+            durees = [n["duree"] for n in self.niveaux]
+            L.append(f"  Durée moyenne / niveau   : {_duree(sum(durees) / nb)}")
+            L.append(f"  Plus rapide / plus long  : {_duree(min(durees))} / {_duree(max(durees))}")
+            L.append(f"  Rythme                   : {nb / (duree / 3600):.1f} niveaux par heure")
+        L.append("")
+        L.append("MOTS")
+        L.append(f"  Mots trouvés             : {self.mots}")
+        L.append(f"  Essais au total          : {self.essais}"
+                 + (f"  (réussite {100 * self.mots / self.essais:.0f} %)" if self.essais else ""))
+        if self.sources:
+            L.append("  Trouvés grâce à          : " + ", ".join(
+                f"{n} {s}" for s, n in self.sources.most_common()))
+        if self.plus_long:
+            L.append(f"  Mot le plus long         : {self.plus_long} ({len(self.plus_long)} lettres)")
+        if self.essais:
+            L.append(f"  Temps moyen par essai    : glisser {self.t_glisser / self.essais:.2f} s"
+                     f" · capture {self.t_capture / self.essais:.2f} s")
+        L.append("")
+        L.append("ÉVÉNEMENTS")
+        L.append(f"  Pages de récompense touchées : {self.recompenses}")
+        L.append(f"  Appuis sur RETOUR            : {self.retours}")
+        L.append(f"  Nouveaux scans de grille     : {self.rescans}")
+        L.append(f"  Erreurs (reprise auto)       : {self.erreurs}"
+                 + ("  -> détail dans erreurs.log" if self.erreurs else ""))
+        if self.niveaux:
+            L.append("")
+            L.append("DÉTAIL DES NIVEAUX")
+            L.append("   n°  lettres   cases  mots  essais  durée")
+            for i, n in enumerate(self.niveaux, 1):
+                L.append(f"  {i:3d}  {n['lettres']:<8}  {n['cases']:5d}  {n['mots']:4d}  {n['essais']:6d}"
+                         f"  {_duree(n['duree'])}")
+        return "\n".join(L) + "\n"
+
+    def ecrire(self):
+        try:
+            os.makedirs(RAPPORTS_DIR, exist_ok=True)
+            with open(self.fichier, "w", encoding="utf-8") as f:
+                f.write(self.texte())
+        except Exception as e:
+            print("  (compte rendu non écrit :", e, ")")
+
+
+SESSION = Session()
+
 # =============================================================================
 #  JEU : résolution d'un niveau et boucle principale
 # =============================================================================
@@ -749,6 +875,7 @@ def jouer_niveau(img, debug=False, chrono=None):
             annoter(img, grille, roue, lettres, os.path.join(DEBUG_DIR, f"echec_{int(time.time())}.png"))
         return False
     cle = "".join(sorted(lettres_txt))
+    SESSION.debut_niveau(lettres_txt, len(grille["cases"]))
     print(f"\n=== Niveau : lettres {' '.join(lettres_txt)} | "
           f"{len(grille['cases'])} cases, mots de {sorted(len(s) for s in grille['slots'])}")
     if debug:
@@ -807,6 +934,7 @@ def jouer_niveau(img, debug=False, chrono=None):
                 #    puis on rejoue aussi les mots déjà tentés (un glissement a pu être raté)
                 print("  ? rien ne colle avec", ["".join(c or "_" for c in m) for m in motifs],
                       "-> nouveau scan de la grille, puis on retente les mots déjà essayés")
+                SESSION.rescans += 1
                 img = attendre_ecran_stable(capture())
                 try:
                     os.makedirs(CAPTURES_DIR, exist_ok=True)
@@ -857,7 +985,9 @@ def jouer_niveau(img, debug=False, chrono=None):
             time.sleep(1.0)
             img = capture()
             cm.etape("confirmation")
+        SESSION.essai(dict(cm.etapes).get("glisser", 0), dict(cm.etapes).get("capture", 0))
         if detecter_roue(img) is None:
+            SESSION.mot_trouve(mot, source)
             print(f"  ✓ {mot} ({source}) — niveau terminé   ⏱ {cm}")
             apprendre(cle, mot)
             return True
@@ -881,6 +1011,7 @@ def jouer_niveau(img, debug=False, chrono=None):
                 for c, ch in zip(places[0], mot):
                     lu.setdefault(c, ch)
             cm.etape("lecture")
+            SESSION.mot_trouve(mot, source)
             print(f"  ✓ {mot} ({source})  [{len(nv)} cases restantes]   ⏱ {cm}")
             apprendre(cle, mot)
         else:
@@ -948,6 +1079,7 @@ def jouer_sans_fin(debug=False, niveaux_max=None):
             raise
         except Exception as e:
             erreurs += 1
+            SESSION.erreurs += 1
             print(f"\n  ! erreur n°{erreurs} : {e}")
             try:
                 with open(os.path.join(HERE, "erreurs.log"), "a", encoding="utf-8") as f:
@@ -971,6 +1103,7 @@ def boucle(debug=False, niveaux_max=None):
         os.makedirs(DEBUG_DIR, exist_ok=True)
     print("Appareils :", adb("devices").strip().splitlines()[1:])
     init_tactile()
+    SESSION.mode_tactile = "sendevent (rapide)" if TACTILE else "input"
     global NIVEAUX_FAITS
     faits, inconnu_depuis, taps_inconnu = NIVEAUX_FAITS, None, 0
     while niveaux_max is None or faits < niveaux_max:
@@ -989,7 +1122,9 @@ def boucle(debug=False, niveaux_max=None):
                 except Exception:
                     pass
                 ch.etape("sauvegarde capture")
-            if jouer_niveau(img, debug, ch):
+            ok = jouer_niveau(img, debug, ch)
+            SESSION.fin_niveau(ok)
+            if ok:
                 faits += 1
                 NIVEAUX_FAITS = faits
                 time.sleep(DELAI_FIN_NIVEAU)
@@ -1009,10 +1144,12 @@ def boucle(debug=False, niveaux_max=None):
                     h, w = img.shape[:2]
                     print("  ? écran inconnu -> toucher en bas au milieu (récompense ?)")
                     tap(w * POS_TAP_INCONNU[0], h * POS_TAP_INCONNU[1])
+                    SESSION.recompenses += 1
                     taps_inconnu += 1
                 else:
                     print("  ? toujours bloqué -> RETOUR")
                     back()
+                    SESSION.retours += 1
                     taps_inconnu = 0
                 inconnu_depuis = None
             time.sleep(1)
@@ -1067,6 +1204,12 @@ if __name__ == "__main__":
             for f in a.test:
                 tester(f)
         else:
-            jouer_sans_fin(a.debug, a.niveaux)
+            try:
+                jouer_sans_fin(a.debug, a.niveaux)
+            finally:
+                SESSION._niveau = None             # niveau interrompu : non compté
+                SESSION.ecrire()
+                print("\n" + SESSION.texte())
+                print("Compte rendu enregistré dans :", SESSION.fichier)
     except KeyboardInterrupt:
         print("\nArrêt.")
