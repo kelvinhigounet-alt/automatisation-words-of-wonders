@@ -1,0 +1,16 @@
+# Outils téléchargés par l'installateur
+platform-tools/
+
+# Fichiers créés pendant l'utilisation
+mots_appris.json
+captures/
+debug/
+capture_test_annote.png
+_ocr_tmp.png
+*_annote.png
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
