@@ -687,6 +687,16 @@ def dico():
     return DICO
 
 
+_DICO_SET = None
+
+
+def dico_ensemble():
+    global _DICO_SET
+    if _DICO_SET is None:
+        _DICO_SET = set(dico())
+    return _DICO_SET
+
+
 def banque():
     try:
         with open(BANQUE, encoding="utf-8") as f:
@@ -724,7 +734,11 @@ def candidats(lettres, motifs, deja):
             vus.add(m); yield m, "banque"
     # les mots déjà acceptés dans d'autres niveaux font partie des mots du jeu :
     # on les essaie avant le reste du dictionnaire (beaucoup moins d'essais ratés)
-    connus = {m for mots in b.values() for m in mots}
+    # (un mot hors dictionnaire n'est retenu que s'il a été validé dans 2 niveaux différents :
+    # écarte les mots enregistrés à tort quand l'animation du jeu avait du retard)
+    vus_niveaux = Counter(m for mots in b.values() for m in set(mots))
+    dico_set = dico_ensemble()
+    connus = {m for m, n in vus_niveaux.items() if n >= 2 or m in dico_set}
     for L in sorted(longueurs, reverse=True):
         for m in dico():
             if len(m) == L and m in connus and m not in vus and ok(m):
@@ -1059,6 +1073,25 @@ def jouer_niveau(img, debug=False, chrono=None):
                 deja.add("".join(lu[c] for c in sl))
 
     mots_deja_places()
+
+    def mot_reellement_pose(img, nouvelles, restantes, possibles):
+        """Le jeu a parfois une animation en retard : les cases d'un mot se remplissent
+        après l'essai suivant. On lit les lettres réellement posées pour savoir lequel
+        des mots essayés (actuel ou précédent) a rempli la grille."""
+        lire_cases(img, nouvelles)
+        finis = [sl for sl in grille["slots"]
+                 if any(c in nouvelles for c in sl) and not any(c in restantes for c in sl)]
+        lus = ["".join(lu.get(c, "?") for c in sl) for sl in finis]
+        for m in possibles:
+            if m and m in lus:
+                return m, finis[lus.index(m)]
+        for m in possibles:                     # lecture incomplète : lettres compatibles
+            for sl, v in zip(finis, lus):
+                if m and len(v) == len(m) and all(a in ("?", b) for a, b in zip(v, m)):
+                    return m, sl
+        return None, None
+
+    precedent, source_prec = None, None         # dernier mot sans effet visible (peut-être en retard)
     chrono.etape("lecture grille")
     if lu:
         print("  lettres déjà dans la grille :", " ".join(sorted(lu.values())))
@@ -1147,10 +1180,16 @@ def jouer_niveau(img, debug=False, chrono=None):
                 fin = detecter_roue(img) is None
         SESSION.essai(dict(cm.etapes).get("glisser", 0), dict(cm.etapes).get("capture", 0))
         if not fin and not (cases_vides(img, grille) - set(lu)):
-            # plus aucune case vide : ce mot a fini la grille
-            SESSION.mot_trouve(mot, source)
-            print(f"  ✓ {mot} ({source}) — niveau terminé   ⏱ {cm}")
-            apprendre(cle, mot)
+            # plus aucune case vide : ce mot (ou le précédent, si animation en retard) a fini la grille
+            bon, _ = mot_reellement_pose(img, set(vides), set(), [mot, precedent])
+            if bon and bon != mot:
+                print(f"  ✓ {bon} (validé avec retard) — niveau terminé   ⏱ {cm}")
+                SESSION.mot_trouve(bon, source_prec)
+                apprendre(cle, bon)
+            else:
+                SESSION.mot_trouve(mot, source)
+                print(f"  ✓ {mot} ({source}) — niveau terminé   ⏱ {cm}")
+                apprendre(cle, mot)
             return True
         if fin:
             # la roue a disparu : niveau fini (mot non compté, on ne sait pas s'il était bon)
@@ -1166,22 +1205,33 @@ def jouer_niveau(img, debug=False, chrono=None):
             if etape:
                 etape, contraintes, cle_motifs = 0, True, None
             nouvelles = vides - nv
-            lire_cases(img, nouvelles)
+            bon, emplacement = mot_reellement_pose(img, nouvelles, nv, [mot, precedent])
+            retard = bool(bon) and bon != mot
+            if not bon:
+                bon = mot                       # lecture impossible : on garde l'ancien comportement
             # cases que la lecture n'a pas su lire : on déduit depuis l'emplacement rempli
-            places = [sl for sl in grille["slots"]
-                      if len(sl) == len(mot) and not any(c in nv for c in sl)
-                      and any(c in nouvelles for c in sl)
-                      and all(lu.get(c, ch) == ch for c, ch in zip(sl, mot))]
+            places = [emplacement] if emplacement else [
+                sl for sl in grille["slots"]
+                if len(sl) == len(bon) and not any(c in nv for c in sl)
+                and any(c in nouvelles for c in sl)
+                and all(lu.get(c, ch) == ch for c, ch in zip(sl, bon))]
             if len(places) == 1:
-                for c, ch in zip(places[0], mot):
+                for c, ch in zip(places[0], bon):
                     lu.setdefault(c, ch)
             cm.etape("lecture")
-            SESSION.mot_trouve(mot, source)
-            print(f"  ✓ {mot} ({source})  [{len(nv)} cases restantes]   ⏱ {cm}")
-            apprendre(cle, mot)
+            if retard:
+                SESSION.mot_trouve(bon, source_prec)
+                print(f"  ✓ {bon} (validé avec retard)  [{len(nv)} cases restantes]   ⏱ {cm}")
+                precedent, source_prec = mot, source   # le mot actuel peut lui aussi arriver en retard
+            else:
+                SESSION.mot_trouve(mot, source)
+                print(f"  ✓ {mot} ({source})  [{len(nv)} cases restantes]   ⏱ {cm}")
+                precedent, source_prec = None, None
+            apprendre(cle, bon)
         else:
             cm.etape("lecture")
             print(f"    ✗ {mot:<8} ⏱ {cm}")
+            precedent, source_prec = mot, source
         vides = nv
     print("  ✓ grille complète")
     return True
