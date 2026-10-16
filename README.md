@@ -159,7 +159,8 @@ MOTS
 |---|---|
 | `✓ FOIE (dico) [10 cases restantes]` | mot accepté par le jeu, trouvé dans le dictionnaire |
 | `✗ OFFICE` | mot refusé (pas dans la grille), le bot passe au suivant |
-| `(banque)` | mot déjà validé lors d'une partie précédente |
+| `(banque)` | mot déjà validé avec ce même tirage de lettres |
+| `(connu)` | mot déjà accepté dans un autre niveau : essayé avant le reste du dictionnaire |
 | `(aléatoire)` | combinaison au hasard, quand le dictionnaire n'a rien donné |
 | `⏱ glisser … capture …` | temps de chaque étape |
 | `? écran inconnu -> toucher en bas` | page de récompense : le bot touche l'écran pour la fermer |
@@ -175,7 +176,9 @@ Bloc-notes ou VS Code) :
 
 | Réglage | Par défaut | Effet |
 |---|---|---|
-| `DELAI_APRES_MOT` | `0.30` | attente après chaque mot. Monte à `0.5` si des mots justes ne sont pas comptés |
+| `DELAI_APRES_MOT` | `0.25` | attente après chaque mot. Monte à `0.4` si des mots justes ne sont pas comptés |
+| `DELAI_FIN_NIVEAU` | `0.8` | pause après un niveau terminé |
+| `CAPTURE_PARTIELLE` | `True` | ne transfère que le haut de l'écran pendant un niveau (capture ~2× plus rapide). `False` si ton téléphone pose problème |
 | `DELAI_ENTRE_LETTRES` | `0.012` | pause entre deux lettres pendant le glissement |
 | `ATTENTE_ECRAN_INCONNU` | `3` | secondes sur une page inconnue avant de toucher l'écran |
 | `POS_TAP_INCONNU` | `(0.5, 0.85)` | où toucher sur une page inconnue (milieu, 85 % de la hauteur) |

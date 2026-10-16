@@ -33,15 +33,17 @@ import numpy as np
 #  RÉGLAGES — tu peux modifier ces valeurs
 # =============================================================================
 
-DELAI_APRES_MOT = 0.30          # s : attente après un mot (animation) avant de recapturer
+DELAI_APRES_MOT = 0.25          # s : attente après un mot (animation) avant de recapturer
 DELAI_ENTRE_LETTRES = 0.012     # s : pause entre deux lettres pendant le glissement
-DELAI_FIN_NIVEAU = 3.0          # s : animation de victoire
+DELAI_FIN_NIVEAU = 0.8          # s : pause après un niveau (le bot surveille ensuite l'écran)
 MAX_ESSAIS_ALEATOIRES = 400     # combinaisons au hasard maximum par niveau
 ATTENTE_ECRAN_INCONNU = 3       # s sur un écran inconnu avant de toucher en bas (récompenses)
 POS_TAP_INCONNU = (0.5, 0.85)   # où toucher : (x, y) en fraction de l'écran
 TAPS_AVANT_RETOUR = 4           # touchers sans effet avant d'appuyer sur RETOUR
 MODE_TACTILE = "auto"           # "auto" | "sendevent" (rapide, souvent bloqué) | "input"
 CAPTURE_TOUS_LES_N_NIVEAUX = 3  # garde une capture tous les N niveaux (0 = jamais)
+CAPTURE_PARTIELLE = True        # pendant un niveau, ne transfère que le haut de l'écran (grille) :
+                                # capture ~2x plus rapide. Mettre False en cas de souci.
 
 
 # =============================================================================
@@ -156,13 +158,32 @@ def sh(commande):
     return _SHELL.run(commande)
 
 
-def capture():
-    """Capture brute (sans compression PNG sur le téléphone) : bien plus rapide que -p."""
+_ECRAN = None       # (largeur, hauteur, taille de l'en-tête) appris à la 1re capture
+_PARTIELLE_OK = True
+
+
+def capture(lignes=None):
+    """Capture brute (sans compression PNG sur le téléphone) : bien plus rapide que -p.
+    lignes=N : ne transfère que les N premières lignes de l'écran (le reste est noir)."""
+    global _ECRAN, _PARTIELLE_OK
+    if lignes and _ECRAN and _PARTIELLE_OK and CAPTURE_PARTIELLE:
+        w, h, entete = _ECRAN
+        lignes = min(int(lignes), h)
+        taille = entete + w * lignes * 4
+        raw = adb("exec-out", f"screencap | head -c {taille}", binary=True)
+        if len(raw) == taille:
+            img = np.zeros((h, w, 3), np.uint8)
+            rgba = np.frombuffer(raw, np.uint8, offset=entete).reshape(lignes, w, 4)
+            img[:lignes] = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+            return img
+        print("  (capture partielle impossible sur ce téléphone -> capture complète)")
+        _PARTIELLE_OK = False
     raw = adb("exec-out", "screencap", binary=True)
     if len(raw) > 16:
         w, h = int.from_bytes(raw[0:4], "little"), int.from_bytes(raw[4:8], "little")
         entete = len(raw) - w * h * 4
         if 0 < w < 10000 and 0 < h < 10000 and entete in (12, 16):
+            _ECRAN = (w, h, entete)
             rgba = np.frombuffer(raw, np.uint8, offset=entete).reshape(h, w, 4)
             return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
     png = adb("exec-out", "screencap", "-p", binary=True)          # repli
@@ -692,10 +713,21 @@ def candidats(lettres, motifs, deja):
     longueurs = {len(m) for m in motifs}
     ok = lambda m: m not in deja and compatible(m, motifs) and not Counter(m) - stock
     vus = set()
-    for m in banque().get(cle, []):
+    b = banque()
+    for m in b.get(cle, []):
         if ok(m):
             vus.add(m); yield m, "banque"
-    # les mots longs remplissent plus de cases : on les essaie en premier
+    # les mots déjà acceptés dans d'autres niveaux font partie des mots du jeu :
+    # on les essaie avant le reste du dictionnaire (beaucoup moins d'essais ratés)
+    connus = {m for mots in b.values() for m in mots}
+    for L in sorted(longueurs, reverse=True):
+        for m in dico():
+            if len(m) == L and m in connus and m not in vus and ok(m):
+                vus.add(m); yield m, "connu"
+        for m in sorted(connus):
+            if len(m) == L and m not in vus and ok(m):
+                vus.add(m); yield m, "connu"
+    # puis le dictionnaire ; les mots longs remplissent plus de cases : en premier
     for L in sorted(longueurs, reverse=True):
         for m in dico():
             if len(m) == L and m not in vus and ok(m):
@@ -936,6 +968,8 @@ def jouer_niveau(img, debug=False, chrono=None):
         print("  lettres déjà dans la grille :", " ".join(sorted(lu.values())))
     print("  ⏱", chrono)
 
+    essais_sans_roue = 0
+
     while vides:
         motifs = motifs_restants()
         if motifs != cle_motifs:
@@ -993,17 +1027,32 @@ def jouer_niveau(img, debug=False, chrono=None):
         cm.etape("glisser")
         time.sleep(DELAI_APRES_MOT)
         cm.etape("attente")
-        img = capture()
+        # capture partielle (grille seule), sauf de temps en temps pour vérifier
+        # que la roue est toujours là (fin de niveau non détectée par la grille)
+        essais_sans_roue += 1
+        complete = essais_sans_roue >= 4 or not CAPTURE_PARTIELLE
+        # hauteur utile : le bas de la grille (+ marge) ; le reste de l'écran n'est pas transféré
+        bas_grille = max(y + h for x, y, w, h in grille["cases"].values()) + 40
+        img = capture(None if complete else bas_grille)
         cm.etape("capture")
-        if detecter_roue(img) is None:          # écran de fin de niveau ? on confirme
-            time.sleep(1.0)
-            img = capture()
-            cm.etape("confirmation")
+        fin = False
+        if complete:
+            essais_sans_roue = 0
+            if detecter_roue(img) is None:      # écran de fin de niveau ? on confirme
+                time.sleep(0.5)
+                img = capture()
+                cm.etape("confirmation")
+                fin = detecter_roue(img) is None
         SESSION.essai(dict(cm.etapes).get("glisser", 0), dict(cm.etapes).get("capture", 0))
-        if detecter_roue(img) is None:
+        if not fin and not (cases_vides(img, grille) - set(lu)):
+            # plus aucune case vide : ce mot a fini la grille
             SESSION.mot_trouve(mot, source)
             print(f"  ✓ {mot} ({source}) — niveau terminé   ⏱ {cm}")
             apprendre(cle, mot)
+            return True
+        if fin:
+            # la roue a disparu : niveau fini (mot non compté, on ne sait pas s'il était bon)
+            print(f"  ✓ niveau terminé   ⏱ {cm}")
             return True
         nv = cases_vides(img, grille) - set(lu)
         if TACTILE and not SUCCES_TACTILE and len(deja) >= 12 and len(nv) == len(vides) == len(grille["cases"]):
@@ -1049,7 +1098,7 @@ def attendre_ecran_stable(img, essais=4):
     (sinon on lit des lettres à moitié apparues : H lu comme F...)."""
     s0 = _signature(img)
     for _ in range(essais):
-        time.sleep(0.25)
+        time.sleep(0.1)
         img = capture()
         s1 = _signature(img)
         if s1 == s0:
@@ -1148,7 +1197,7 @@ def boucle(debug=False, niveaux_max=None):
             inconnu_depuis = None
             print("→ niveau suivant")
             tap(*bouton)
-            time.sleep(2.5)
+            time.sleep(0.6)
         else:
             inconnu_depuis = inconnu_depuis or time.time()
             if time.time() - inconnu_depuis > ATTENTE_ECRAN_INCONNU:
@@ -1166,7 +1215,7 @@ def boucle(debug=False, niveaux_max=None):
                     SESSION.retours += 1
                     taps_inconnu = 0
                 inconnu_depuis = None
-            time.sleep(1)
+            time.sleep(0.3)
             continue
         taps_inconnu = 0
     print(f"Terminé : {faits} niveaux.")

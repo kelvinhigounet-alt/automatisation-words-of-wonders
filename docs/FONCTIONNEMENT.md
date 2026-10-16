@@ -83,9 +83,11 @@ Pour chaque emplacement encore incomplet, le bot construit un **motif**, par exe
 
 `candidats` propose ensuite des mots dans cet ordre :
 1. la **banque** `mots_appris.json` : mots déjà validés pour ce même tirage de lettres ;
-2. le **dictionnaire français** (`data/dico_fr.txt`), trié du mot le plus courant
+2. les **mots connus** : mots acceptés dans n'importe quel autre niveau. Ils font partie
+   de la liste de mots du jeu, donc ils ont beaucoup plus de chances d'être bons ;
+3. le **dictionnaire français** (`data/dico_fr.txt`), trié du mot le plus courant
    au plus rare, puis le dictionnaire anglais ;
-3. des **combinaisons au hasard** (400 maximum).
+4. des **combinaisons au hasard** (400 maximum).
 
 Un mot n'est proposé que s'il :
 - s'écrit avec les lettres de la roue (en respectant le nombre de chaque lettre) ;
@@ -101,7 +103,9 @@ Les mots les plus longs sont essayés en premier, car ils remplissent plus de ca
 
 `jouer_niveau` répète :
 1. glisser le mot sur la roue ;
-2. attendre la fin de l'animation, refaire une capture ;
+2. attendre la fin de l'animation, refaire une capture. Pour aller plus vite, seul le
+   haut de l'écran (jusqu'au bas de la grille) est transféré du téléphone ; une capture
+   complète est faite tous les 4 essais pour vérifier que la roue est toujours là ;
 3. compter les cases vides : si elles ont diminué, le mot était bon. Le bot lit alors
    les nouvelles lettres posées et note le mot dans la banque.
 
