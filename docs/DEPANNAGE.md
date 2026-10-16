@@ -90,6 +90,15 @@ le téléphone revienne, puis reprend la partie. Seul **Ctrl + C** l'arrête.
 Le détail de chaque erreur est noté dans le fichier `erreurs.log` : joins-le si tu
 ouvres une *issue* sur GitHub.
 
+## Le PC se met en veille pendant la nuit
+
+Le bot empêche Windows de se mettre en veille tout seul tant qu'il tourne (le réglage
+normal revient quand tu l'arrêtes). L'écran du PC peut s'éteindre, ce n'est pas gênant.
+Sur un **ordinateur portable**, laisse-le **branché** et **ne rabats pas l'écran** :
+fermer le capot déclenche la veille quand même, sauf si tu changes ce réglage
+(*Panneau de configuration → Options d'alimentation → Choisir l'action qui suit la
+fermeture du capot → Ne rien faire*).
+
 ## Plusieurs téléphones branchés
 
 Indique lequel utiliser avant de lancer (le numéro est affiché par `adb devices`) :

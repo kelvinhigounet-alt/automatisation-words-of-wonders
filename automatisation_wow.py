@@ -1127,6 +1127,25 @@ class Chrono:
 
 NIVEAUX_FAITS = 0
 
+# Windows : empêche la mise en veille automatique du PC pendant que le bot tourne
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+
+
+def empecher_veille(actif=True):
+    """Tant que le bot tourne, Windows ne se met pas en veille tout seul (l'écran du PC
+    peut quand même s'éteindre). Rétabli à l'arrêt. Sans effet hors Windows."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        etat = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if actif else 0)
+        ctypes.windll.kernel32.SetThreadExecutionState(etat)
+        if actif:
+            print("Mise en veille du PC désactivée pendant la session.")
+    except Exception as e:
+        print("  (impossible d'empêcher la mise en veille :", e, ")")
+
 
 def jouer_sans_fin(debug=False, niveaux_max=None):
     """Lance la boucle de jeu et la relance automatiquement après n'importe quelle
@@ -1267,9 +1286,11 @@ if __name__ == "__main__":
             for f in a.test:
                 tester(f)
         else:
+            empecher_veille(True)
             try:
                 jouer_sans_fin(a.debug, a.niveaux)
             finally:
+                empecher_veille(False)
                 SESSION._niveau = None             # niveau interrompu : non compté
                 SESSION.ecrire()
                 print("\n" + SESSION.texte())
