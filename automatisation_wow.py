@@ -1074,24 +1074,47 @@ def jouer_niveau(img, debug=False, chrono=None):
 
     mots_deja_places()
 
-    def mot_reellement_pose(img, nouvelles, restantes, possibles):
-        """Le jeu a parfois une animation en retard : les cases d'un mot se remplissent
-        après l'essai suivant. On lit les lettres réellement posées pour savoir lequel
-        des mots essayés (actuel ou précédent) a rempli la grille."""
+    def mots_poses(img, nouvelles, restantes):
+        """Le jeu a parfois une animation en retard : les cases d'un mot se remplissent un
+        ou deux essais plus tard. On lit donc les lettres réellement posées dans chaque
+        emplacement qui vient d'être complété : c'est le vrai mot, quel que soit l'essai.
+        Renvoie [(mot, emplacement, lu_entièrement)]."""
         lire_cases(img, nouvelles)
-        finis = [sl for sl in grille["slots"]
-                 if any(c in nouvelles for c in sl) and not any(c in restantes for c in sl)]
-        lus = ["".join(lu.get(c, "?") for c in sl) for sl in finis]
-        for m in possibles:
-            if m and m in lus:
-                return m, finis[lus.index(m)]
-        for m in possibles:                     # lecture incomplète : lettres compatibles
-            for sl, v in zip(finis, lus):
-                if m and len(v) == len(m) and all(a in ("?", b) for a, b in zip(v, m)):
-                    return m, sl
-        return None, None
+        trouves = []
+        for sl in grille["slots"]:
+            if not any(c in nouvelles for c in sl) or any(c in restantes for c in sl):
+                continue
+            v = "".join(lu.get(c, "?") for c in sl)
+            if "?" not in v:
+                trouves.append((v, sl, True))
+                continue
+            # lecture incomplète : un mot essayé récemment et compatible (dictionnaire d'abord)
+            comp = [m for m in reversed(recents)
+                    if len(m) == len(v) and all(x in ("?", y) for x, y in zip(v, m))]
+            comp.sort(key=lambda m: m not in dico_ensemble())
+            if comp:
+                trouves.append((comp[0], sl, False))
+        return trouves
 
-    precedent, source_prec = None, None         # dernier mot sans effet visible (peut-être en retard)
+    def valider(trouves, mot, source, suffixe=""):
+        """Note les mots réellement posés ; renvoie True si au moins un a été identifié."""
+        for w, sl, sur in trouves:
+            for c, ch in zip(sl, w):
+                lu.setdefault(c, ch)
+            src = sources_recents.get(w, "lu à l'écran")
+            SESSION.mot_trouve(w, src)
+            info = f"({src})" if w == mot else "(validé avec retard)" if w in recents else "(lu à l'écran)"
+            print(f"  ✓ {w} {info}{suffixe}")
+            # un mot n'est enregistré que s'il est sûr : lu en entier, ou du dictionnaire
+            if sur or w in dico_ensemble():
+                apprendre(cle, w)
+            if w in recents:
+                recents.remove(w)
+            deja.add(w)
+        return bool(trouves)
+
+    recents = []                # derniers mots essayés sans effet visible (peut-être en retard)
+    sources_recents = {}
     chrono.etape("lecture grille")
     if lu:
         print("  lettres déjà dans la grille :", " ".join(sorted(lu.values())))
@@ -1180,16 +1203,10 @@ def jouer_niveau(img, debug=False, chrono=None):
                 fin = detecter_roue(img) is None
         SESSION.essai(dict(cm.etapes).get("glisser", 0), dict(cm.etapes).get("capture", 0))
         if not fin and not (cases_vides(img, grille) - set(lu)):
-            # plus aucune case vide : ce mot (ou le précédent, si animation en retard) a fini la grille
-            bon, _ = mot_reellement_pose(img, set(vides), set(), [mot, precedent])
-            if bon and bon != mot:
-                print(f"  ✓ {bon} (validé avec retard) — niveau terminé   ⏱ {cm}")
-                SESSION.mot_trouve(bon, source_prec)
-                apprendre(cle, bon)
-            else:
-                SESSION.mot_trouve(mot, source)
-                print(f"  ✓ {mot} ({source}) — niveau terminé   ⏱ {cm}")
-                apprendre(cle, mot)
+            # plus aucune case vide : on lit le(s) dernier(s) mot(s) réellement posé(s)
+            recents.append(mot); sources_recents[mot] = source
+            if not valider(mots_poses(img, set(vides), set()), mot, source, f" — niveau terminé   ⏱ {cm}"):
+                print(f"  ✓ niveau terminé (dernier mot non identifié)   ⏱ {cm}")
             return True
         if fin:
             # la roue a disparu : niveau fini (mot non compté, on ne sait pas s'il était bon)
@@ -1205,33 +1222,22 @@ def jouer_niveau(img, debug=False, chrono=None):
             if etape:
                 etape, contraintes, cle_motifs = 0, True, None
             nouvelles = vides - nv
-            bon, emplacement = mot_reellement_pose(img, nouvelles, nv, [mot, precedent])
-            retard = bool(bon) and bon != mot
-            if not bon:
-                bon = mot                       # lecture impossible : on garde l'ancien comportement
-            # cases que la lecture n'a pas su lire : on déduit depuis l'emplacement rempli
-            places = [emplacement] if emplacement else [
-                sl for sl in grille["slots"]
-                if len(sl) == len(bon) and not any(c in nv for c in sl)
-                and any(c in nouvelles for c in sl)
-                and all(lu.get(c, ch) == ch for c, ch in zip(sl, bon))]
-            if len(places) == 1:
-                for c, ch in zip(places[0], bon):
-                    lu.setdefault(c, ch)
+            recents.append(mot); sources_recents[mot] = source
+            trouves = mots_poses(img, nouvelles, nv)
             cm.etape("lecture")
-            if retard:
-                SESSION.mot_trouve(bon, source_prec)
-                print(f"  ✓ {bon} (validé avec retard)  [{len(nv)} cases restantes]   ⏱ {cm}")
-                precedent, source_prec = mot, source   # le mot actuel peut lui aussi arriver en retard
-            else:
+            if not valider(trouves, mot, source, f"  [{len(nv)} cases restantes]   ⏱ {cm}"):
+                # rien d'identifiable : ancien comportement (mot actuel), sans l'enregistrer s'il vient du hasard
                 SESSION.mot_trouve(mot, source)
                 print(f"  ✓ {mot} ({source})  [{len(nv)} cases restantes]   ⏱ {cm}")
-                precedent, source_prec = None, None
-            apprendre(cle, bon)
+                if source != "aléatoire" or mot in dico_ensemble():
+                    apprendre(cle, mot)
+                recents.remove(mot)
+            del recents[:-3]                    # on ne garde que les 3 derniers essais en attente
         else:
             cm.etape("lecture")
             print(f"    ✗ {mot:<8} ⏱ {cm}")
-            precedent, source_prec = mot, source
+            recents.append(mot); sources_recents[mot] = source
+            del recents[:-3]
         vides = nv
     print("  ✓ grille complète")
     return True
