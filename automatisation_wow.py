@@ -42,6 +42,10 @@ POS_TAP_INCONNU = (0.5, 0.85)   # où toucher : (x, y) en fraction de l'écran
 TAPS_AVANT_RETOUR = 4           # touchers sans effet avant d'appuyer sur RETOUR
 MODE_TACTILE = "auto"           # "auto" | "sendevent" (rapide, souvent bloqué) | "input"
 CAPTURE_TOUS_LES_N_NIVEAUX = 3  # garde une capture tous les N niveaux (0 = jamais)
+INDICES_SECOURS = True          # niveau bloqué : utilise l'ampoule du jeu (100 gemmes) jusqu'à la fin
+COUT_INDICE = 100               # prix d'une ampoule en gemmes
+INDICES_MAX_PAR_NIVEAU = 8      # sécurité : ampoules maximum pour un même niveau
+POS_BOUTON_INDICE = (0.898, 0.6165)  # ampoule à droite de la roue, en fraction de l'écran (x, y)
 CAPTURE_PARTIELLE = True        # pendant un niveau, ne transfère que le haut de l'écran (grille) :
                                 # capture ~2x plus rapide. Mettre False en cas de souci.
 
@@ -300,7 +304,8 @@ def _cases_claires(img):
     h, w = img.shape[:2]
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     cases = []
-    for smax, vmin in ((50, 228), (25, 242)):
+    # 3e passe : cases gris clair semi-transparentes sur un décor sombre (ex. statue)
+    for smax, vmin in ((50, 228), (25, 242), (16, 195)):
         m = _masque_clair(img, smax, vmin).astype(np.uint8) * 255
         m[int(h * 0.5):] = 0
         m[: int(h * 0.09)] = 0
@@ -412,7 +417,7 @@ def construire_grille(cases, img=None, modeles=None, lettres=None):
         bords = [b for b in bords if b.size and np.median(b[..., 2]) > 225 and np.median(b[..., 1]) < 50]
         if bords:
             smax = min(42, max(float(np.median([np.median(b[..., 1]) for b in bords])) + 12, 18))
-            vmin = max(222, min(238, float(np.median([np.median(b[..., 2]) for b in bords])) - 18))
+            vmin = max(190, min(238, float(np.median([np.median(b[..., 2]) for b in bords])) - 18))
         clair = _masque_clair(img, smax, vmin)
         H, W = img.shape[:2]
         rs = [k[0] for k in pos]; cs = [k[1] for k in pos]
@@ -809,6 +814,7 @@ class Session:
         self.plus_long = ""
         self.t_glisser = self.t_capture = 0.0
         self.rescans = self.recompenses = self.retours = self.erreurs = 0
+        self.indices = self.gemmes_depensees = self.finis_par_indices = 0
         self.mode_tactile = "?"
         self._niveau = None
 
@@ -881,6 +887,9 @@ class Session:
         L.append(f"  Pages de récompense touchées : {self.recompenses}")
         L.append(f"  Appuis sur RETOUR            : {self.retours}")
         L.append(f"  Nouveaux scans de grille     : {self.rescans}")
+        L.append(f"  Ampoules utilisées           : {self.indices}"
+                 + (f"  ({self.gemmes_depensees} gemmes, {self.finis_par_indices} niveau(x) fini(s) ainsi)"
+                    if self.indices else ""))
         L.append(f"  Erreurs (reprise auto)       : {self.erreurs}"
                  + ("  -> détail dans erreurs.log" if self.erreurs else ""))
         if self.niveaux:
@@ -903,6 +912,86 @@ class Session:
 
 SESSION = Session()
 
+
+# =============================================================================
+#  INDICES : l'ampoule du jeu en dernier recours
+# =============================================================================
+
+def lire_gemmes(img):
+    """Nombre de gemmes affiché en haut à gauche (ex. « 6 010 » -> 6010), ou None."""
+    h, w = img.shape[:2]
+    zone = img[int(h * 0.045):int(h * 0.1), int(w * 0.09):int(w * 0.25)]
+    gris = cv2.cvtColor(zone, cv2.COLOR_BGR2GRAY)
+    texte = 255 - (gris > 200).astype(np.uint8) * 255          # chiffres blancs -> noir sur blanc
+    texte = cv2.copyMakeBorder(texte, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+    tmp = os.path.join(HERE, "_ocr_tmp.png")
+    cv2.imwrite(tmp, texte)
+    try:
+        out = subprocess.run([TESSERACT, tmp, "-", "--psm", "7", "-c",
+                              "tessedit_char_whitelist=0123456789"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    chiffres = "".join(c for c in out if c.isdigit())
+    return int(chiffres) if chiffres else None
+
+
+def bouton_indice(img):
+    """Position de l'ampoule si elle est bien affichée (rond foncé avec icône blanche), sinon None."""
+    h, w = img.shape[:2]
+    x, y = int(w * POS_BOUTON_INDICE[0]), int(h * POS_BOUTON_INDICE[1])
+    r = int(w * 0.05)
+    v = cv2.cvtColor(img[y - r:y + r, x - r:x + r], cv2.COLOR_BGR2HSV)[..., 2]
+    if v.size and v.mean() < 160 and 0.06 < (v > 200).mean() < 0.35:
+        return x, y
+    return None
+
+
+def finir_avec_indices(grille):
+    """Appuie sur l'ampoule jusqu'à ce que le niveau soit fini.
+    Renvoie True si le niveau est terminé, False s'il faut continuer autrement
+    (plus assez de gemmes, bouton introuvable, ampoule sans effet...)."""
+    if not INDICES_SECOURS:
+        return False
+    img = capture()
+    sans_effet = 0
+    for _ in range(INDICES_MAX_PAR_NIVEAU):
+        if detecter_roue(img) is None:
+            time.sleep(0.5)
+            if detecter_roue(capture()) is None:
+                return True
+        gemmes = lire_gemmes(img)
+        if gemmes is not None and gemmes < COUT_INDICE:
+            print(f"  💎 {gemmes} gemmes : pas assez pour une ampoule ({COUT_INDICE})")
+            return False
+        pos = bouton_indice(img)
+        if pos is None:
+            print("  ! ampoule introuvable à l'écran")
+            return False
+        vides_avant = len(cases_vides(img, grille))
+        print(f"  💡 ampoule (gemmes : {gemmes if gemmes is not None else '?'}, "
+              f"{vides_avant} case(s) vide(s))")
+        tap(*pos)
+        SESSION.indices += 1
+        time.sleep(1.2)                         # animation de la lettre révélée
+        img = capture()
+        apres = lire_gemmes(img)
+        if gemmes is not None and apres is not None and apres < gemmes:
+            SESSION.gemmes_depensees += gemmes - apres
+        if detecter_roue(img) is None:
+            continue                            # fin de niveau : vérifiée au tour suivant
+        if len(cases_vides(img, grille)) >= vides_avant and (apres is None or apres == gemmes):
+            sans_effet += 1
+            if sans_effet >= 2:
+                print("  ! l'ampoule ne change rien -> on continue sans")
+                return False
+        else:
+            sans_effet = 0
+    if detecter_roue(capture()) is None:
+        return True
+    print(f"  ! {INDICES_MAX_PAR_NIVEAU} ampoules utilisées sans finir -> on continue sans")
+    return False
+
 # =============================================================================
 #  JEU : résolution d'un niveau et boucle principale
 # =============================================================================
@@ -915,6 +1004,13 @@ def jouer_niveau(img, debug=False, chrono=None):
     grille, roue, lettres = analyser(img)
     chrono.etape("analyse")
     lettres_txt = [l for l, _, _ in lettres]
+    if ("?" in lettres_txt or len(lettres) < 3) and grille and len(lettres) >= 3:
+        # une lettre de la roue est illisible : l'ampoule finit le niveau sans avoir besoin de la lire
+        print(f"  ! lettres mal lues : {lettres_txt} -> on essaie l'ampoule")
+        if finir_avec_indices(grille):
+            SESSION.finis_par_indices += 1
+            print("  ✓ niveau terminé grâce aux ampoules")
+            return True
     if "?" in lettres_txt or len(lettres) < 3:
         print(f"  ! lettres mal lues : {lettres_txt}")
         if debug:
@@ -1009,11 +1105,17 @@ def jouer_niveau(img, debug=False, chrono=None):
                 etape, cle_motifs = 1, None
                 continue
             if etape == 1:
-                # 2) toujours rien : on oublie les lettres placées
+                # 2) toujours rien : l'ampoule du jeu, tant qu'il y a assez de gemmes
+                print("  ? toujours bloqué -> ampoule du jeu")
+                if finir_avec_indices(grille):
+                    SESSION.finis_par_indices += 1
+                    print("  ✓ niveau terminé grâce aux ampoules")
+                    return True
+                # 3) pas d'ampoule possible : on oublie les lettres placées
                 print("  ? toujours rien -> on réessaie sans tenir compte des lettres placées")
                 contraintes, cle_motifs, etape = False, None, 2
                 continue
-            print("  ! plus de candidats — niveau abandonné (utilise un indice à la main)")
+            print("  ! plus de candidats — niveau abandonné")
             return False
         if echecs and echecs % 25 == 0:
             # beaucoup d'échecs d'affilée : on vérifie que les lettres lues sont toujours les bonnes

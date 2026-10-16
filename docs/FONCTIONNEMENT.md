@@ -113,8 +113,12 @@ Les mots les plus longs sont essayés en premier, car ils remplissent plus de ca
 1. il **rescanne toute la grille** sur une nouvelle capture (une erreur de lecture est
    possible) et **retente les mots déjà essayés** (un glissement a pu rater, par exemple
    si le téléphone chauffe) ;
-2. si ça ne suffit toujours pas, il essaie **sans tenir compte des lettres posées** ;
-3. il relit aussi la roue après 25 échecs d'affilée, au cas où elle aurait été mal lue.
+2. toujours bloqué : il appuie sur **l'ampoule** du jeu (à droite de la roue), qui révèle
+   une lettre à chaque fois, jusqu'à ce que le niveau soit fini. Il lit le nombre de
+   gemmes en haut à gauche et s'arrête s'il en reste moins de 100 (prix d'une ampoule),
+   si l'ampoule ne change rien, ou après 8 ampoules sur le même niveau ;
+3. sans ampoule possible, il essaie **sans tenir compte des lettres posées** ;
+4. il relit aussi la roue après 25 échecs d'affilée, au cas où elle aurait été mal lue.
 
 La **fin du niveau** est détectée quand la roue disparaît (vérifié deux fois, à une
 seconde d'intervalle, pour ne pas se tromper pendant une animation).

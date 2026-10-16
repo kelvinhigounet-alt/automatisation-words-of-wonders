@@ -163,6 +163,7 @@ MOTS
 | `(connu)` | mot déjà accepté dans un autre niveau : essayé avant le reste du dictionnaire |
 | `(aléatoire)` | combinaison au hasard, quand le dictionnaire n'a rien donné |
 | `⏱ glisser … capture …` | temps de chaque étape |
+| `💡 ampoule (gemmes : 6010, …)` | niveau bloqué : le bot utilise l'ampoule du jeu |
 | `? écran inconnu -> toucher en bas` | page de récompense : le bot touche l'écran pour la fermer |
 
 **Astuces pour les longues sessions :** le téléphone chauffe, et un téléphone chaud
@@ -178,6 +179,8 @@ Bloc-notes ou VS Code) :
 |---|---|---|
 | `DELAI_APRES_MOT` | `0.25` | attente après chaque mot. Monte à `0.4` si des mots justes ne sont pas comptés |
 | `DELAI_FIN_NIVEAU` | `0.8` | pause après un niveau terminé |
+| `INDICES_SECOURS` | `True` | niveau bloqué : appuie sur l'ampoule du jeu (100 gemmes) jusqu'à la fin du niveau, tant qu'il reste assez de gemmes |
+| `INDICES_MAX_PAR_NIVEAU` | `8` | ampoules maximum pour un même niveau (sécurité) |
 | `CAPTURE_PARTIELLE` | `True` | ne transfère que le haut de l'écran pendant un niveau (capture ~2× plus rapide). `False` si ton téléphone pose problème |
 | `DELAI_ENTRE_LETTRES` | `0.012` | pause entre deux lettres pendant le glissement |
 | `ATTENTE_ECRAN_INCONNU` | `3` | secondes sur une page inconnue avant de toucher l'écran |
