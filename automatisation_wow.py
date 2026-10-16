@@ -22,7 +22,8 @@ Utilisation :
   python automatisation_wow.py --test img    analyse une capture, sans téléphone
   python automatisation_wow.py --debug       joue + enregistre des images annotées
 """
-import argparse, itertools, json, os, queue, random, shutil, subprocess, sys, threading, time, traceback
+import argparse, base64, itertools, json, math, os, queue, random, shutil, subprocess, sys, threading, time, traceback
+import urllib.request
 from collections import Counter
 
 import cv2
@@ -42,6 +43,9 @@ POS_TAP_INCONNU = (0.5, 0.85)   # où toucher : (x, y) en fraction de l'écran
 TAPS_AVANT_RETOUR = 4           # touchers sans effet avant d'appuyer sur RETOUR
 MODE_TACTILE = "auto"           # "auto" | "sendevent" (rapide, souvent bloqué) | "input"
 CAPTURE_TOUS_LES_N_NIVEAUX = 3  # garde une capture tous les N niveaux (0 = jamais)
+IA_SECOURS = True               # niveau bloqué : demande à Claude (API Anthropic) de lire l'écran
+IA_MODELE = "claude-sonnet-5-5" # modèle utilisé (voir docs/IA_SECOURS.md)
+IA_MAX_APPELS_PAR_NIVEAU = 2    # limite le coût si un niveau reste bloqué
 CAPTURE_PARTIELLE = True        # pendant un niveau, ne transfère que le haut de l'écran (grille) :
                                 # capture ~2x plus rapide. Mettre False en cas de souci.
 
@@ -84,6 +88,7 @@ MODELES = os.path.join(DATA, "modeles_lettres.npz")
 BANQUE = os.path.join(HERE, "mots_appris.json")
 DEBUG_DIR = os.path.join(HERE, "debug")
 CAPTURES_DIR = os.path.join(HERE, "captures")
+CLE_API_FICHIER = os.path.join(HERE, "cle_api.txt")
 
 
 # =============================================================================
@@ -809,6 +814,7 @@ class Session:
         self.plus_long = ""
         self.t_glisser = self.t_capture = 0.0
         self.rescans = self.recompenses = self.retours = self.erreurs = 0
+        self.ia_appels = self.ia_mots = 0
         self.mode_tactile = "?"
         self._niveau = None
 
@@ -881,6 +887,8 @@ class Session:
         L.append(f"  Pages de récompense touchées : {self.recompenses}")
         L.append(f"  Appuis sur RETOUR            : {self.retours}")
         L.append(f"  Nouveaux scans de grille     : {self.rescans}")
+        L.append(f"  Appels à l'IA de secours     : {self.ia_appels}"
+                 + (f"  ({self.ia_mots} mots trouvés grâce à elle)" if self.ia_appels else ""))
         L.append(f"  Erreurs (reprise auto)       : {self.erreurs}"
                  + ("  -> détail dans erreurs.log" if self.erreurs else ""))
         if self.niveaux:
@@ -903,6 +911,126 @@ class Session:
 
 SESSION = Session()
 
+
+# =============================================================================
+#  IA DE SECOURS : quand le bot est bloqué, Claude lit la capture d'écran
+# =============================================================================
+
+APPELS_IA = Counter()     # nombre d'appels par tirage de lettres (limite le coût)
+_IA_PREVENU = False
+
+
+def cle_api():
+    """Clé API Anthropic : variable d'environnement ANTHROPIC_API_KEY ou fichier cle_api.txt."""
+    cle = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not cle and os.path.exists(CLE_API_FICHIER):
+        with open(CLE_API_FICHIER, encoding="utf-8") as f:
+            cle = f.read().strip()
+    return cle
+
+
+def ordre_horaire(lettres):
+    """Lettres de la roue triées dans le sens des aiguilles d'une montre, depuis celle du haut."""
+    if not lettres:
+        return []
+    cx = sum(x for _, x, _ in lettres) / len(lettres)
+    cy = sum(y for _, _, y in lettres) / len(lettres)
+    return sorted(lettres, key=lambda t: math.atan2(t[1] - cx, -(t[2] - cy)) % (2 * math.pi))
+
+
+def demander_ia(img, lettres, motifs, cle_tirage):
+    """Envoie la capture à Claude. Renvoie {"roue": [...], "mots": [...]} ou None."""
+    global _IA_PREVENU
+    if not IA_SECOURS:
+        return None
+    cle = cle_api()
+    if not cle:
+        if not _IA_PREVENU:
+            print("  (IA de secours non configurée : voir docs/IA_SECOURS.md)")
+            _IA_PREVENU = True
+        return None
+    if APPELS_IA[cle_tirage] >= IA_MAX_APPELS_PAR_NIVEAU:
+        print("  (IA déjà consultée pour ce niveau)")
+        return None
+    APPELS_IA[cle_tirage] += 1
+    SESSION.ia_appels += 1
+
+    # image réduite (bord long 1568 px) en JPEG : moins cher et plus rapide
+    h, w = img.shape[:2]
+    f = min(1.0, 1568 / max(h, w))
+    petite = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    ok, jpg = cv2.imencode(".jpg", petite, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    lues = " ".join(l for l, _, _ in ordre_horaire(lettres)) or "aucune"
+    restants = ", ".join("".join(c or "_" for c in m) for m in motifs) or "inconnus"
+    consigne = (
+        "Capture d'écran du jeu mobile Words of Wonders (mots croisés en français, "
+        "parfois quelques mots anglais). En bas : une roue de lettres. En haut : la grille ; "
+        "les tuiles foncées contiennent des lettres déjà trouvées, les cases claires sont vides "
+        "(une case avec un objet décoratif — feuille, papillon, soleil... — est aussi une case vide).\n"
+        f"Le programme a lu ces lettres sur la roue (sens horaire depuis le haut, peut-être fausses) : {lues}\n"
+        f"Emplacements restants selon le programme (peut-être faux) : {restants}\n\n"
+        "Réponds UNIQUEMENT avec ce JSON, sans texte autour :\n"
+        '{"roue": ["lettres de la roue dans le sens des aiguilles d\'une montre, en commençant '
+        'par la lettre la plus haute"], "mots": ["mots qui remplissent les cases vides, du plus '
+        'sûr au moins sûr"]}\n'
+        "Chaque mot s'écrit avec les lettres de la roue (une lettre ne sert pas plus de fois "
+        "qu'elle n'apparaît), a la longueur exacte de son emplacement et respecte les lettres "
+        "déjà posées aux croisements. Majuscules, sans accents. Donne aussi des alternatives "
+        "si tu hésites (10 mots maximum)."
+    )
+    corps = {
+        "model": IA_MODELE,
+        "max_tokens": 400,
+        "messages": [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                         "data": base64.b64encode(jpg.tobytes()).decode()}},
+            {"type": "text", "text": consigne},
+        ]}],
+    }
+    requete = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages", data=json.dumps(corps).encode(),
+        headers={"x-api-key": cle, "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"})
+    print(f"  🤖 niveau bloqué -> on demande à l'IA ({IA_MODELE})...")
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(requete, timeout=60) as r:
+            reponse = json.load(r)
+        texte = "".join(b.get("text", "") for b in reponse.get("content", []))
+        donnees = json.loads(texte[texte.index("{"): texte.rindex("}") + 1])
+    except Exception as e:
+        detail = ""
+        if hasattr(e, "read"):
+            try:
+                detail = " " + e.read().decode(errors="ignore")[:200]
+            except Exception:
+                pass
+        print(f"  ! l'IA n'a pas pu répondre : {e}{detail}")
+        return None
+    norm = lambda m: "".join(c for c in str(m).upper() if "A" <= c <= "Z")
+    roue = [norm(l)[:1] for l in donnees.get("roue", []) if norm(l)]
+    mots = [norm(m) for m in donnees.get("mots", []) if len(norm(m)) >= 3]
+    print(f"     réponse en {time.time() - t0:.1f}s : roue {' '.join(roue)} | mots {', '.join(mots)}")
+    try:                                   # garde la capture : utile pour enrichir les modèles
+        os.makedirs(CAPTURES_DIR, exist_ok=True)
+        cv2.imwrite(os.path.join(CAPTURES_DIR, time.strftime("ia_%m%d_%H%M%S.png")), img)
+    except Exception:
+        pass
+    return {"roue": roue, "mots": mots}
+
+
+def corriger_roue(lettres, roue_ia):
+    """Remplace les lettres lues par celles de l'IA (même nombre, même ordre horaire)."""
+    if not roue_ia or len(roue_ia) != len(lettres):
+        return lettres
+    triees = ordre_horaire(lettres)
+    corrigees = [(l_ia, x, y) for l_ia, (_, x, y) in zip(roue_ia, triees)]
+    avant = " ".join(l for l, _, _ in triees)
+    apres = " ".join(roue_ia)
+    if avant != apres:
+        print(f"     roue corrigée par l'IA : {avant} -> {apres}")
+    return corrigees
+
 # =============================================================================
 #  JEU : résolution d'un niveau et boucle principale
 # =============================================================================
@@ -915,6 +1043,13 @@ def jouer_niveau(img, debug=False, chrono=None):
     grille, roue, lettres = analyser(img)
     chrono.etape("analyse")
     lettres_txt = [l for l, _, _ in lettres]
+    lettres_brutes = sorted(lettres_txt)        # telles que lues par le bot (pour les relectures)
+    if ("?" in lettres_txt or len(lettres) < 3) and len(lettres) >= 3 and grille:
+        print(f"  ! lettres mal lues : {lettres_txt}")
+        rep_ia = demander_ia(img, lettres, [], "".join(lettres_brutes))
+        if rep_ia:
+            lettres = corriger_roue(lettres, rep_ia["roue"])
+            lettres_txt = [l for l, _, _ in lettres]
     if "?" in lettres_txt or len(lettres) < 3:
         print(f"  ! lettres mal lues : {lettres_txt}")
         if debug:
@@ -935,7 +1070,8 @@ def jouer_niveau(img, debug=False, chrono=None):
     cle_motifs = None
     contraintes = True
     echecs = 0
-    etape = 0           # 0 = normal, 1 = après nouveau scan, 2 = sans contraintes
+    etape = 0           # 0 = normal, 1 = après nouveau scan, 2 = mots de l'IA, 3 = sans contraintes
+    mots_ia, essais_ia = [], set()
 
     def lire_cases(img, cases):
         for c in cases:
@@ -973,7 +1109,15 @@ def jouer_niveau(img, debug=False, chrono=None):
     while vides:
         motifs = motifs_restants()
         if motifs != cle_motifs:
-            gen, cle_motifs = candidats(lettres_txt, motifs, deja), motifs
+            if etape == 2:
+                # mots proposés par l'IA, s'ils sont possibles avec la roue et la grille
+                stock = Counter(lettres_txt)
+                longueurs = {len(m) for m in motifs}
+                gen = iter([(m, "ia") for m in mots_ia
+                            if m not in essais_ia and len(m) in longueurs and not Counter(m) - stock])
+            else:
+                gen = candidats(lettres_txt, motifs, deja)
+            cle_motifs = motifs
         try:
             mot, source = next(gen)
         except StopIteration:
@@ -992,12 +1136,14 @@ def jouer_niveau(img, debug=False, chrono=None):
                 g2, _, l2 = analyser(img)
                 if detecter_roue(img) is None:
                     return True
-                if sorted(l for l, _, _ in l2) != sorted(lettres_txt):
+                if sorted(l for l, _, _ in l2) != lettres_brutes:
                     print("  ! les lettres de la roue ont changé -> on recommence le niveau")
                     return False
                 if g2:
                     grille = g2
-                lettres = l2
+                lettres = l2 if sorted(l for l, _, _ in l2) == sorted(lettres_txt) \
+                    else [(l, x, y) for (l, _, _), (_, x, y) in
+                          zip(ordre_horaire(lettres), ordre_horaire(l2))]
                 modeles[:] = modeles_roue(img)
                 lu.clear()
                 lire_cases(img, grille["cases"])
@@ -1009,19 +1155,36 @@ def jouer_niveau(img, debug=False, chrono=None):
                 etape, cle_motifs = 1, None
                 continue
             if etape == 1:
-                # 2) toujours rien : on oublie les lettres placées
+                # 2) toujours rien : on demande à l'IA de lire l'écran
+                img = capture()
+                rep_ia = demander_ia(img, lettres, motifs, "".join(lettres_brutes))
+                etape, cle_motifs = 2, None
+                if rep_ia:
+                    nouv = corriger_roue(lettres, rep_ia["roue"])
+                    if [l for l, _, _ in nouv] != lettres_txt:
+                        lettres = nouv
+                        lettres_txt = [l for l, _, _ in lettres]
+                        modeles[:] = modeles_roue(img)
+                        deja.clear()
+                        mots_deja_places()
+                    mots_ia = rep_ia["mots"]
+                continue
+            if etape == 2:
+                # 3) toujours rien : on oublie les lettres placées
                 print("  ? toujours rien -> on réessaie sans tenir compte des lettres placées")
-                contraintes, cle_motifs, etape = False, None, 2
+                contraintes, cle_motifs, etape = False, None, 3
                 continue
             print("  ! plus de candidats — niveau abandonné (utilise un indice à la main)")
             return False
         if echecs and echecs % 25 == 0:
             # beaucoup d'échecs d'affilée : on vérifie que les lettres lues sont toujours les bonnes
             relu = sorted(l for l, _, _ in detecter_lettres(capture()))
-            if relu != sorted(lettres_txt):
+            if relu != lettres_brutes:
                 print(f"  ! lettres relues différentes ({' '.join(relu)}) -> on recommence le niveau")
                 return False
         deja.add(mot)
+        if source == "ia":
+            essais_ia.add(mot)
         cm = Chrono()
         glisser(chemin(mot, lettres))
         cm.etape("glisser")
@@ -1047,6 +1210,8 @@ def jouer_niveau(img, debug=False, chrono=None):
         if not fin and not (cases_vides(img, grille) - set(lu)):
             # plus aucune case vide : ce mot a fini la grille
             SESSION.mot_trouve(mot, source)
+            if source == "ia":
+                SESSION.ia_mots += 1
             print(f"  ✓ {mot} ({source}) — niveau terminé   ⏱ {cm}")
             apprendre(cle, mot)
             return True
@@ -1061,7 +1226,9 @@ def jouer_niveau(img, debug=False, chrono=None):
         echecs = 0 if len(nv) < len(vides) else echecs + 1
         if len(nv) < len(vides):
             SUCCES_TACTILE = True
-            if etape:
+            if source == "ia":
+                SESSION.ia_mots += 1
+            if etape and etape != 2:            # on continue avec les mots de l'IA s'il en reste
                 etape, contraintes, cle_motifs = 0, True, None
             nouvelles = vides - nv
             lire_cases(img, nouvelles)

@@ -160,6 +160,7 @@ MOTS
 | `✓ FOIE (dico) [10 cases restantes]` | mot accepté par le jeu, trouvé dans le dictionnaire |
 | `✗ OFFICE` | mot refusé (pas dans la grille), le bot passe au suivant |
 | `(banque)` | mot déjà validé avec ce même tirage de lettres |
+| `(ia)` | mot proposé par l'IA de secours sur un niveau bloqué |
 | `(connu)` | mot déjà accepté dans un autre niveau : essayé avant le reste du dictionnaire |
 | `(aléatoire)` | combinaison au hasard, quand le dictionnaire n'a rien donné |
 | `⏱ glisser … capture …` | temps de chaque étape |
@@ -168,6 +169,13 @@ MOTS
 **Astuces pour les longues sessions :** le téléphone chauffe, et un téléphone chaud
 ralentit tout (les temps `glisser` et `capture` augmentent). Enlève la coque, baisse
 la luminosité au minimum, et fais une pause si les temps dépassent 2 secondes.
+
+### IA de secours (optionnel)
+
+Si tu laisses le bot tourner sans surveillance (la nuit…), il peut demander de l'aide à
+Claude quand il reste bloqué sur un niveau : lettre inconnue, case mal détectée, mot
+absent du dictionnaire. Il faut une clé API Anthropic (moins d'un centime par appel) :
+tout est expliqué dans **[docs/IA_SECOURS.md](docs/IA_SECOURS.md)**.
 
 ## 7. Réglages
 
@@ -178,6 +186,7 @@ Bloc-notes ou VS Code) :
 |---|---|---|
 | `DELAI_APRES_MOT` | `0.25` | attente après chaque mot. Monte à `0.4` si des mots justes ne sont pas comptés |
 | `DELAI_FIN_NIVEAU` | `0.8` | pause après un niveau terminé |
+| `IA_SECOURS` | `True` | niveau bloqué : demande les mots à Claude (voir [docs/IA_SECOURS.md](docs/IA_SECOURS.md)) |
 | `CAPTURE_PARTIELLE` | `True` | ne transfère que le haut de l'écran pendant un niveau (capture ~2× plus rapide). `False` si ton téléphone pose problème |
 | `DELAI_ENTRE_LETTRES` | `0.012` | pause entre deux lettres pendant le glissement |
 | `ATTENTE_ECRAN_INCONNU` | `3` | secondes sur une page inconnue avant de toucher l'écran |
@@ -238,6 +247,7 @@ automatisation-words-of-wonders/
 │   └── construire_dictionnaire.py reconstruit les dictionnaires (optionnel)
 └── docs/
     ├── FONCTIONNEMENT.md      comment marche le bot
+    ├── IA_SECOURS.md          configurer l'aide de Claude sur les niveaux bloqués
     └── DEPANNAGE.md           solutions aux problèmes courants
 ```
 

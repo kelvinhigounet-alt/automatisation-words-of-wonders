@@ -4,6 +4,7 @@ platform-tools/
 # Fichiers créés pendant l'utilisation
 mots_appris.json
 erreurs.log
+cle_api.txt
 rapports/
 captures/
 debug/
