@@ -273,20 +273,30 @@ def _masque_clair(img, smax=50, vmin=238):
 
 
 def _cases_claires(img):
-    """Cases vides bien visibles de la grille -> liste de (x, y, w, h)."""
+    """Cases vides bien visibles de la grille -> liste de (x, y, w, h).
+    Deux passes : seuil large (cases teintées par le décor) puis seuil strict
+    (cases blanches posées sur un décor lui-même très clair, ex. ciel rose)."""
     h, w = img.shape[:2]
-    m = _masque_clair(img, 50, 228).astype(np.uint8) * 255
-    m[int(h * 0.5):] = 0
-    m[: int(h * 0.09)] = 0
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     cases = []
-    for c in contours:
-        x, y, bw, bh = cv2.boundingRect(c)
-        # le contour externe ignore les trous : une case avec un objet dedans passe aussi
-        # remplissage : écarte les lettres blanches creuses (O, Q, U...) des tuiles remplies
-        if bw > 0.06 * w and 0.8 < bw / bh < 1.25 and m[y:y + bh, x:x + bw].mean() > 0.45 * 255:
-            cases.append((x, y, bw, bh))
+    for smax, vmin in ((50, 228), (25, 242)):
+        m = _masque_clair(img, smax, vmin).astype(np.uint8) * 255
+        m[int(h * 0.5):] = 0
+        m[: int(h * 0.09)] = 0
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in contours:
+            x, y, bw, bh = cv2.boundingRect(c)
+            # le contour externe ignore les trous : une case avec un objet dedans passe aussi
+            # remplissage : écarte les lettres blanches creuses (O, Q, U...) des tuiles remplies
+            if not (bw > 0.045 * w and 0.85 < bw / bh < 1.18 and m[y:y + bh, x:x + bw].mean() > 0.52 * 255):
+                continue
+            # le bord d'une vraie case est uniforme et peu coloré (écarte nuages, ciel clair...)
+            bord = hsv[y + bh // 4: y + 3 * bh // 4, x + 3: x + max(4, bw // 6)]
+            if not (bord.size and np.median(bord[..., 1]) < 44 and bord[..., 2].std() < 14):
+                continue
+            if all(abs(x - cx) > bw / 2 or abs(y - cy) > bh / 2 for cx, cy, _, _ in cases):
+                cases.append((x, y, bw, bh))
     if not cases:
         return []
     med = np.median([c[2] for c in cases])
@@ -338,8 +348,9 @@ def detecter_cases(img, modeles=None):
     remplies = _cases_remplies(img, modeles)
     if claires and remplies:
         tr = np.median([c[2] for c in remplies])
-        claires = [c for c in claires if c[2] > 0.8 * tr] or claires
-        t = int(np.median([c[2] for c in claires]))
+        # les cases vides ont la même taille que les tuiles remplies
+        claires = [c for c in claires if 0.8 * tr < c[2] < 1.25 * tr]
+        t = int(np.median([c[2] for c in claires])) if claires else int(tr)
         remplies = [(x + w // 2 - t // 2, y + h // 2 - t // 2, t, t) for x, y, w, h in remplies]
         remplies = [r for r in remplies if all(abs(r[0] - c[0]) > t / 2 or abs(r[1] - c[1]) > t / 2
                                                for c in claires)]
@@ -379,7 +390,7 @@ def construire_grille(cases, img=None, modeles=None, lettres=None):
         bords = [hsv[y + h // 4: y + 3 * h // 4, x + 4: x + w // 6] for x, y, w, h in cases]
         bords = [b for b in bords if b.size and np.median(b[..., 2]) > 225 and np.median(b[..., 1]) < 50]
         if bords:
-            smax = max(float(np.median([np.median(b[..., 1]) for b in bords])) + 12, 35)
+            smax = min(42, max(float(np.median([np.median(b[..., 1]) for b in bords])) + 12, 18))
             vmin = max(222, min(238, float(np.median([np.median(b[..., 2]) for b in bords])) - 18))
         clair = _masque_clair(img, smax, vmin)
         H, W = img.shape[:2]
@@ -557,6 +568,9 @@ def _masque_lettre_case(img, rect):
             continue
         pix = lab == j
         if sat[pix].mean() > 70:        # objet coloré (feuille, papillon...), pas une lettre
+            continue
+        # une vraie lettre tranche nettement sur sa tuile (sinon : simple dégradé du décor)
+        if abs(float(g[pix].mean()) - float(g[~pix].mean())) < 70:
             continue
         if best is None or A > best[1]:
             best = (j, A)
