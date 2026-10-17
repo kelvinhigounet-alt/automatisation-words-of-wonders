@@ -319,7 +319,7 @@ def _cases_claires(img):
                 continue
             # le bord d'une vraie case est uniforme et peu coloré (écarte nuages, ciel clair...)
             bord = hsv[y + bh // 4: y + 3 * bh // 4, x + 3: x + max(4, bw // 6)]
-            if not (bord.size and np.median(bord[..., 1]) < 44 and bord[..., 2].std() < 14):
+            if not (bord.size and np.median(bord[..., 1]) < 49 and bord[..., 2].std() < 14):
                 continue
             if all(abs(x - cx) > bw / 2 or abs(y - cy) > bh / 2 for cx, cy, _, _ in cases):
                 cases.append((x, y, bw, bh))
@@ -445,7 +445,7 @@ def construire_grille(cases, img=None, modeles=None, lettres=None):
         bords = [hsv[y + h // 4: y + 3 * h // 4, x + 4: x + w // 6] for x, y, w, h in cases]
         bords = [b for b in bords if b.size and np.median(b[..., 2]) > 195 and np.median(b[..., 1]) < 50]
         if bords:
-            smax = min(42, max(float(np.median([np.median(b[..., 1]) for b in bords])) + 12, 18))
+            smax = min(50, max(float(np.median([np.median(b[..., 1]) for b in bords])) + 12, 18))
             vmin = max(190, min(238, float(np.median([np.median(b[..., 2]) for b in bords])) - 18))
         clair = _masque_clair(img, smax, vmin)
         H, W = img.shape[:2]
