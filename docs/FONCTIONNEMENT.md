@@ -127,6 +127,8 @@ seconde d'intervalle, pour ne pas se tromper pendant une animation).
 | Ce que le bot voit | Ce qu'il fait |
 |---|---|
 | une roue + une grille | attend que l'écran soit stable, puis joue le niveau |
+| une roue mais aucune grille reconnue (3 fois de suite, décor inconnu) | garde la capture dans `captures/grille_inconnue_*.png` et finit le niveau avec l'ampoule |
+| une roue, une grille, mais plus aucune case vide visible | finit le niveau avec l'ampoule (cases cachées par le décor) |
 | le gros bouton vert « NIVEAU xx » | appuie dessus |
 | autre chose pendant 3 s | touche en bas au milieu (récompenses) |
 | toujours bloqué après 4 touchers | appuie sur RETOUR (ferme une pub) |

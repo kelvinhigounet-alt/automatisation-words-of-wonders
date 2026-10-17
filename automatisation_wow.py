@@ -305,7 +305,7 @@ def _cases_claires(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     cases = []
     # 3e passe : cases gris clair semi-transparentes sur un décor sombre (ex. statue)
-    for smax, vmin in ((50, 228), (25, 242), (16, 195)):
+    for smax, vmin in ((50, 228), (25, 242), (26, 198)):
         m = _masque_clair(img, smax, vmin).astype(np.uint8) * 255
         m[int(h * 0.5):] = 0
         m[: int(h * 0.09)] = 0
@@ -342,13 +342,14 @@ def _cases_remplies(img, modeles):
     centres, hauteurs = [], []
     for j in range(1, n):
         X, Y, W, H, A = st[j]
-        if not 0.03 * w < H < 0.12 * w or W > 1.3 * H:
+        if not 0.03 * w < H < 0.12 * w or W > 1.7 * H:
             continue
         pad = max(3, int(H * 0.25))
-        zone = hsv[max(0, Y - pad): Y + H + pad, max(0, X - pad): X + W + pad, 2]
-        anneau = np.ones(zone.shape, bool)
+        zone = hsv[max(0, Y - pad): Y + H + pad, max(0, X - pad): X + W + pad]
+        anneau = np.ones(zone.shape[:2], bool)
         anneau[pad: pad + H, pad: pad + W] = False
-        if zone[anneau].mean() > 170:           # pas sur une tuile foncée
+        # la lettre blanche doit être posée sur une tuile foncée OU très colorée (ex. jaune)
+        if zone[..., 2][anneau].mean() > 170 and zone[..., 1][anneau].mean() < 90:
             continue
         m = (lab[Y:Y + H, X:X + W] == j)
         nm, a = _norm(m), W / H
@@ -375,13 +376,41 @@ def detecter_cases(img, modeles=None):
     if claires and remplies:
         tr = np.median([c[2] for c in remplies])
         # les cases vides ont la même taille que les tuiles remplies
-        claires = [c for c in claires if 0.8 * tr < c[2] < 1.25 * tr]
+        # (sauf si ces « tuiles » sont trop peu nombreuses ou incohérentes : fausses détections)
+        filtrees = [c for c in claires if 0.8 * tr < c[2] < 1.25 * tr]
+        if len(remplies) < 3 and len(filtrees) < len(claires) / 2:
+            remplies = []
+        else:
+            claires = filtrees
         t = int(np.median([c[2] for c in claires])) if claires else int(tr)
+    if claires and remplies:
         remplies = [(x + w // 2 - t // 2, y + h // 2 - t // 2, t, t) for x, y, w, h in remplies]
         remplies = [r for r in remplies if all(abs(r[0] - c[0]) > t / 2 or abs(r[1] - c[1]) > t / 2
                                                for c in claires)]
     cases = claires + remplies
     return cases if len(cases) >= 3 else []
+
+
+def bord_uniforme(clair, rect):
+    """Le pourtour d'une vraie case a la couleur des cases vides (un objet décoratif,
+    papillon ou feuille, reste surtout au centre) ; un morceau de décor (statue,
+    colonne, nuage...) n'a pas cette couleur sur ses bords."""
+    x, y, w, h = rect
+    e = max(3, int(w * 0.14))
+    z = clair[y + 3:y + h - 3, x + 3:x + w - 3]
+    if z.size == 0:
+        return False
+    bandes = [z[:e, e:-e], z[-e:, e:-e], z[e:-e, :e], z[e:-e, -e:]]
+    return sum(float(b.mean()) > 0.5 for b in bandes if b.size) >= 3
+
+
+def objet_decoratif(img, clair, rect):
+    """Case vide qui contient un objet très coloré (papillon, feuille, soleil...)."""
+    x, y, w, h = rect
+    z = clair[y:y + h, x:x + w]
+    s = cv2.cvtColor(img[y:y + h, x:x + w], cv2.COLOR_BGR2HSV)[..., 1]
+    autre = ~z
+    return autre.sum() > 0 and float(s[autre].mean()) > 110
 
 
 def construire_grille(cases, img=None, modeles=None, lettres=None):
@@ -414,7 +443,7 @@ def construire_grille(cases, img=None, modeles=None, lettres=None):
         # seuils adaptés au décor, calculés sur les vraies cases vides (pas les tuiles remplies)
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         bords = [hsv[y + h // 4: y + 3 * h // 4, x + 4: x + w // 6] for x, y, w, h in cases]
-        bords = [b for b in bords if b.size and np.median(b[..., 2]) > 225 and np.median(b[..., 1]) < 50]
+        bords = [b for b in bords if b.size and np.median(b[..., 2]) > 195 and np.median(b[..., 1]) < 50]
         if bords:
             smax = min(42, max(float(np.median([np.median(b[..., 1]) for b in bords])) + 12, 18))
             vmin = max(190, min(238, float(np.median([np.median(b[..., 2]) for b in bords])) - 18))
@@ -432,7 +461,9 @@ def construire_grille(cases, img=None, modeles=None, lettres=None):
                     continue
                 voisins = sum((r + dr, c + dc) in pos for dr, dc in ((0, 1), (0, -1), (1, 0), (-1, 0)))
                 # case vide (claire), ou case déjà remplie (tuile colorée avec une lettre)
-                if voisins and (clair[y:y + taille, x:x + taille].mean() > 0.25
+                if voisins and ((clair[y:y + taille, x:x + taille].mean() > 0.25
+                                 and (bord_uniforme(clair, (x, y, taille, taille))
+                                      or objet_decoratif(img, clair, (x, y, taille, taille))))
                                 or (modeles and lire_case(img, (x, y, taille, taille), modeles, lettres))):
                     pos[(r, c)] = (x, y, taille, taille)
     slots = []
@@ -472,7 +503,7 @@ def _composantes_lettres(img):
     res = []
     for j in range(1, n):
         X, Y, W, H, A = st[j]
-        if Y < h * 0.45 or not (0.06 * w < H < 0.14 * w) or W > 1.3 * H:
+        if Y < h * 0.45 or not (0.06 * w < H < 0.14 * w) or W > 1.7 * H:
             continue
         zone = g[max(0, Y - pad): Y + H + pad, max(0, X - pad): X + W + pad]
         anneau = np.ones(zone.shape, bool)
@@ -596,7 +627,7 @@ def _masque_lettre_case(img, rect):
         if sat[pix].mean() > 70:        # objet coloré (feuille, papillon...), pas une lettre
             continue
         # une vraie lettre tranche nettement sur sa tuile (sinon : simple dégradé du décor)
-        if abs(float(g[pix].mean()) - float(g[~pix].mean())) < 70:
+        if abs(float(g[pix].mean()) - float(g[~pix].mean())) < 45:
             continue
         if best is None or A > best[1]:
             best = (j, A)
@@ -1122,6 +1153,15 @@ def jouer_niveau(img, debug=False, chrono=None):
 
     essais_sans_roue = 0
 
+    if not vides and detecter_roue(img) is not None:
+        # la roue est là mais aucune case vide n'est vue : des cases n'ont pas été détectées
+        print("  ? aucune case vide détectée alors que le niveau n'est pas fini -> ampoule du jeu")
+        if finir_avec_indices(grille):
+            SESSION.finis_par_indices += 1
+            print("  ✓ niveau terminé grâce aux ampoules")
+            return True
+        return False
+
     while vides:
         motifs = motifs_restants()
         if motifs != cle_motifs:
@@ -1346,12 +1386,14 @@ def boucle(debug=False, niveaux_max=None):
     SESSION.mode_tactile = "sendevent (rapide)" if TACTILE else "input"
     global NIVEAUX_FAITS
     faits, inconnu_depuis, taps_inconnu = NIVEAUX_FAITS, None, 0
+    roue_sans_grille = 0
     while niveaux_max is None or faits < niveaux_max:
         img = capture()
         bouton = bouton_vert(img)
         roue = detecter_roue(img)
         if roue and detecter_cases(img, modeles_roue(img)):
             inconnu_depuis = None
+            roue_sans_grille = 0
             ch = Chrono()
             img = attendre_ecran_stable(img)     # l'animation d'arrivée du niveau doit être finie
             ch.etape("écran stable")
@@ -1370,8 +1412,29 @@ def boucle(debug=False, niveaux_max=None):
                 time.sleep(DELAI_FIN_NIVEAU)
             else:
                 time.sleep(2)
+        elif roue and len(detecter_lettres(img)) >= 3 and roue_sans_grille < 3:
+            # une roue de lettres mais pas de grille reconnue (décor inconnu) : on réessaie un peu
+            roue_sans_grille += 1
+            time.sleep(0.5)
+            if roue_sans_grille == 3:
+                print("  ? roue visible mais grille non reconnue -> ampoule du jeu")
+                if debug:
+                    cv2.imwrite(os.path.join(DEBUG_DIR, f"grille_inconnue_{int(time.time())}.png"), img)
+                try:
+                    os.makedirs(CAPTURES_DIR, exist_ok=True)
+                    cv2.imwrite(os.path.join(CAPTURES_DIR, time.strftime("grille_inconnue_%H%M%S.png")), img)
+                except Exception:
+                    pass
+                if finir_avec_indices({"cases": {}, "slots": []}):
+                    SESSION.finis_par_indices += 1
+                    faits += 1
+                    NIVEAUX_FAITS = faits
+                    print("  ✓ niveau terminé grâce aux ampoules")
+                    time.sleep(DELAI_FIN_NIVEAU)
+            continue
         elif bouton is not None:
             inconnu_depuis = None
+            roue_sans_grille = 0
             print("→ niveau suivant")
             tap(*bouton)
             time.sleep(0.6)
